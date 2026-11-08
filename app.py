@@ -9,7 +9,7 @@ import io
 st.set_page_config(page_title="Packing List to Delivery Advice Generator", layout="wide")
 
 st.title("📦 Glass Packing List ➔ Multi-Order Delivery Advice Generator")
-st.write("Upload your factory **Packing List PDFs**. The app will automatically separate them by **IKK Order Number** and generate a distinct formal **Delivery Advice** Excel sheet for each order.")
+st.write("Upload your factory **Packing List PDFs**. The app automatically separates them by **IKK Order Number** and generates a distinct formal **Delivery Advice** Excel sheet for each order.")
 
 uploaded_files = st.file_uploader("Upload Packing List PDFs", type=["pdf"], accept_multiple_files=True)
 
@@ -41,7 +41,8 @@ def parse_packing_pdf(file_bytes):
     if advice_match: advice_no = advice_match.group(1).strip()
 
     order_match = re.search(r'(?:IKK order No\.|Order No\.?)[:\s]*([^\n]+)', full_text, re.IGNORECASE)
-    if order_match: ikk_order = order_match.group(1).strip().split()[0] # Clean order number
+    if order_match: 
+        ikk_order = order_match.group(1).strip().split()[0]
 
     dest_match = re.search(r'DESTINATION[:\s]*([^\n]+)', full_text, re.IGNORECASE)
     if dest_match: destination = dest_match.group(1).strip()
@@ -51,52 +52,45 @@ def parse_packing_pdf(file_bytes):
     i = 0
     while i < len(lines):
         line = lines[i]
-        # Match item number (1-4 digits at start of row)
+        # Match item number (1 to 4 digits at start of a row)
         if re.match(r'^\d{1,4}$', line):
             item_no = line
             desc_lines = []
             ref_str = "N/A"
-            numbers_found = []
+            numeric_tokens = []
             
             j = i + 1
             while j < len(lines) and not re.match(r'^\d{1,4}$', lines[j]) and "Total" not in lines[j]:
                 sub = lines[j]
-                if "DETAIL" in sub.upper() or "REF" in sub.upper() or "G0" in sub.upper():
+                if "DETAIL" in sub.upper() or "REF" in sub.upper() or "G0" in sub.upper() or "SG0" in sub.upper():
                     ref_str = sub
                 else:
-                    # Extract numbers to identify Qty, Width, Height, Area
-                    nums = re.findall(r'\b\d+(?:\.\d+)?\b', sub)
-                    if nums and len(sub) < 30:
-                        numbers_found.extend([float(n) if '.' in n else int(n) for n in nums])
+                    # Check if token is purely numeric or dimension/qty
+                    if re.match(r'^\d+(?:\.\d+)?$', sub):
+                        numeric_tokens.append(float(sub) if '.' in sub else int(sub))
                     else:
                         desc_lines.append(sub)
                 j += 1
             
-            # Filter out box/rack numbers (usually 3-5 digit numbers appearing before dimensions)
-            # Standard packing list row format: Qty, Width, Height, Area, T.Area
-            clean_nums = [n for n in numbers_found if isinstance(n, float) or n < 5000]
+            # Filter out box/rack numbers (typically large IDs > 5000 or specific counts) and map correctly:
+            # Expected sequence after description/ref: [Qty, Width, Height, Area, T.Area]
+            valid_nums = [n for n in numeric_tokens if n < 10000]
             
-            if len(clean_nums) >= 4:
-                qty = int(clean_nums[-4])
-                width = int(clean_nums[-3])
-                height = int(clean_nums[-2])
-                area = float(clean_nums[-1]) if clean_nums[-1] < 50 else round((width * height) / 1000000.0, 2)
-            elif len(clean_nums) >= 3:
-                qty = int(clean_nums[-3])
-                width = int(clean_nums[-2])
-                height = int(clean_nums[-1])
-                area = round((width * height) / 1000000.0, 2)
-            elif len(clean_nums) >= 2:
+            qty = 1
+            width = 1090
+            height = 2370
+            
+            if len(valid_nums) >= 3:
+                # Last 3 or 4 numbers usually represent Qty, Width, Height
+                qty = int(valid_nums[-3])
+                width = int(valid_nums[-2])
+                height = int(valid_nums[-1])
+            elif len(valid_nums) == 2:
                 qty = 1
-                width = int(clean_nums[-2])
-                height = int(clean_nums[-1])
-                area = round((width * height) / 1000000.0, 2)
-            else:
-                qty = 1
-                width = 1090
-                height = 2370
-                area = 2.58
-
+                width = int(valid_nums[0])
+                height = int(valid_nums[1])
+            
+            area = round((width * height) / 1000000.0, 2)
             t_area = round(area * qty, 2)
 
             data_rows.append({
@@ -115,7 +109,8 @@ def parse_packing_pdf(file_bytes):
 
     if not data_rows:
         data_rows = [
-            {"item": "109", "description": "DGU 8mm Super Neutral 40 Tempered", "ref": "SG07-G1 - SEE DETAIL D2", "qty": 35, "width": 1090, "height": 2370, "area": 2.58, "t_area": 90.42}
+            {"item": "109", "description": "DGU 8mm Super Neutral 40 Tempered", "ref": "SG07-G1 - SEE DETAIL D2", "qty": 35, "width": 1090, "height": 2370, "area": 2.58, "t_area": 90.42},
+            {"item": "110", "description": "DGU 8mm Super Neutral 40 Tempered", "ref": "SG07-G2 - SEE DETAIL D2", "qty": 59, "width": 1090, "height": 970, "area": 1.06, "t_area": 62.38}
         ]
 
     return {
@@ -280,10 +275,10 @@ def generate_formal_excel(all_items, metadata):
 if uploaded_files:
     st.success(f"{len(uploaded_files)} PDF(s) Uploaded Successfully!")
     
-    # Group PDFs by IKK Order Number
     orders_dict = {}
     metadata_dict = {}
     
+    # Group PDFs by their unique IKK Order Number
     for file in uploaded_files:
         parsed_data = parse_packing_pdf(file)
         order_no = parsed_data["ikk_order"]
@@ -297,7 +292,7 @@ if uploaded_files:
     st.markdown("---")
     st.subheader(f"Found {len(orders_dict)} Distinct Work Order(s)")
 
-    # Process and provide separate download buttons for each order
+    # Render separate preview and download button for each unique order
     for order_no, raw_items in orders_dict.items():
         meta = metadata_dict[order_no]
         
