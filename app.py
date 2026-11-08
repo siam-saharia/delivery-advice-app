@@ -8,8 +8,8 @@ import io
 
 st.set_page_config(page_title="Packing List to Delivery Advice Generator", layout="wide")
 
-st.title("📦 Glass Packing List ➔ Delivery Advice Generator (Strictly Consolidated)")
-st.write("Upload your factory **Packing List PDFs** together. Identical items will be strictly merged into a single row with combined quantities.")
+st.title("📦 Glass Packing List ➔ Multi-Order Delivery Advice Generator")
+st.write("Upload your factory **Packing List PDFs**. The app will automatically separate them by **IKK Order Number** and generate a distinct formal **Delivery Advice** Excel sheet for each order.")
 
 uploaded_files = st.file_uploader("Upload Packing List PDFs", type=["pdf"], accept_multiple_files=True)
 
@@ -41,7 +41,7 @@ def parse_packing_pdf(file_bytes):
     if advice_match: advice_no = advice_match.group(1).strip()
 
     order_match = re.search(r'(?:IKK order No\.|Order No\.?)[:\s]*([^\n]+)', full_text, re.IGNORECASE)
-    if order_match: ikk_order = order_match.group(1).strip()
+    if order_match: ikk_order = order_match.group(1).strip().split()[0] # Clean order number
 
     dest_match = re.search(r'DESTINATION[:\s]*([^\n]+)', full_text, re.IGNORECASE)
     if dest_match: destination = dest_match.group(1).strip()
@@ -51,6 +51,7 @@ def parse_packing_pdf(file_bytes):
     i = 0
     while i < len(lines):
         line = lines[i]
+        # Match item number (1-4 digits at start of row)
         if re.match(r'^\d{1,4}$', line):
             item_no = line
             desc_lines = []
@@ -63,6 +64,7 @@ def parse_packing_pdf(file_bytes):
                 if "DETAIL" in sub.upper() or "REF" in sub.upper() or "G0" in sub.upper():
                     ref_str = sub
                 else:
+                    # Extract numbers to identify Qty, Width, Height, Area
                     nums = re.findall(r'\b\d+(?:\.\d+)?\b', sub)
                     if nums and len(sub) < 30:
                         numbers_found.extend([float(n) if '.' in n else int(n) for n in nums])
@@ -70,24 +72,32 @@ def parse_packing_pdf(file_bytes):
                         desc_lines.append(sub)
                 j += 1
             
-            if len(numbers_found) >= 4:
-                qty = int(numbers_found[0])
-                width = int(numbers_found[1])
-                height = int(numbers_found[2])
-                area = float(numbers_found[3]) if len(numbers_found) > 3 else round((width * height) / 1000000.0, 2)
-                t_area = float(numbers_found[4]) if len(numbers_found) > 4 else round(area * qty, 2)
-            elif len(numbers_found) >= 2:
-                qty = 1
-                width = int(numbers_found[0])
-                height = int(numbers_found[1])
+            # Filter out box/rack numbers (usually 3-5 digit numbers appearing before dimensions)
+            # Standard packing list row format: Qty, Width, Height, Area, T.Area
+            clean_nums = [n for n in numbers_found if isinstance(n, float) or n < 5000]
+            
+            if len(clean_nums) >= 4:
+                qty = int(clean_nums[-4])
+                width = int(clean_nums[-3])
+                height = int(clean_nums[-2])
+                area = float(clean_nums[-1]) if clean_nums[-1] < 50 else round((width * height) / 1000000.0, 2)
+            elif len(clean_nums) >= 3:
+                qty = int(clean_nums[-3])
+                width = int(clean_nums[-2])
+                height = int(clean_nums[-1])
                 area = round((width * height) / 1000000.0, 2)
-                t_area = area * qty
+            elif len(clean_nums) >= 2:
+                qty = 1
+                width = int(clean_nums[-2])
+                height = int(clean_nums[-1])
+                area = round((width * height) / 1000000.0, 2)
             else:
                 qty = 1
                 width = 1090
                 height = 2370
                 area = 2.58
-                t_area = 90.42
+
+            t_area = round(area * qty, 2)
 
             data_rows.append({
                 "item": item_no,
@@ -105,8 +115,7 @@ def parse_packing_pdf(file_bytes):
 
     if not data_rows:
         data_rows = [
-            {"item": "109", "description": "DGU 8mm Super Neutral 40 Tempered", "ref": "SG07-G1 - SEE DETAIL D2", "qty": 35, "width": 1090, "height": 2370, "area": 2.58, "t_area": 90.42},
-            {"item": "110", "description": "DGU 8mm Super Neutral 40 Tempered", "ref": "SG07-G2 - SEE DETAIL D2", "qty": 59, "width": 1090, "height": 970, "area": 1.06, "t_area": 62.38}
+            {"item": "109", "description": "DGU 8mm Super Neutral 40 Tempered", "ref": "SG07-G1 - SEE DETAIL D2", "qty": 35, "width": 1090, "height": 2370, "area": 2.58, "t_area": 90.42}
         ]
 
     return {
@@ -271,37 +280,49 @@ def generate_formal_excel(all_items, metadata):
 if uploaded_files:
     st.success(f"{len(uploaded_files)} PDF(s) Uploaded Successfully!")
     
-    raw_items = []
-    first_metadata = None
+    # Group PDFs by IKK Order Number
+    orders_dict = {}
+    metadata_dict = {}
     
     for file in uploaded_files:
         parsed_data = parse_packing_pdf(file)
-        if not first_metadata:
-            first_metadata = parsed_data
-        raw_items.extend(parsed_data["items"])
-    
-    # STRICT CONSOLIDATION: Group purely by Item Number and Dimensions
-    consolidated_dict = {}
-    for item in raw_items:
-        # Key uses only item number, width, and height to guarantee strict grouping
-        key = (str(item['item']).strip(), item['width'], item['height'])
+        order_no = parsed_data["ikk_order"]
         
-        if key in consolidated_dict:
-            consolidated_dict[key]['qty'] += item['qty']
-            consolidated_dict[key]['t_area'] = round(consolidated_dict[key]['qty'] * consolidated_dict[key]['area'], 2)
-        else:
-            consolidated_dict[key] = item.copy()
+        if order_no not in orders_dict:
+            orders_dict[order_no] = []
+            metadata_dict[order_no] = parsed_data
             
-    combined_items = list(consolidated_dict.values())
+        orders_dict[order_no].extend(parsed_data["items"])
     
-    st.subheader(f"Consolidated Delivery Advice Preview ({len(combined_items)} Unique Items)")
-    df_preview = pd.DataFrame(combined_items)
-    st.dataframe(df_preview, use_container_width=True)
+    st.markdown("---")
+    st.subheader(f"Found {len(orders_dict)} Distinct Work Order(s)")
 
-    excel_bytes = generate_formal_excel(combined_items, first_metadata)
-    st.download_button(
-        label="📥 Download Consolidated Official Delivery Advice Excel (.xlsx)",
-        data=excel_bytes,
-        file_name=f"Delivery_Advice_{first_metadata['advice_no']}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    # Process and provide separate download buttons for each order
+    for order_no, raw_items in orders_dict.items():
+        meta = metadata_dict[order_no]
+        
+        # Strict consolidation per order (Group by Item Number, Width, Height)
+        consolidated_dict = {}
+        for item in raw_items:
+            key = (str(item['item']).strip(), item['width'], item['height'])
+            if key in consolidated_dict:
+                consolidated_dict[key]['qty'] += item['qty']
+                consolidated_dict[key]['t_area'] = round(consolidated_dict[key]['qty'] * consolidated_dict[key]['area'], 2)
+            else:
+                consolidated_dict[key] = item.copy()
+                
+        final_items = list(consolidated_dict.values())
+        
+        with st.container():
+            st.markdown(f"### 📋 Order No: `{order_no}` ({len(final_items)} Unique Items)")
+            st.dataframe(pd.DataFrame(final_items), use_container_width=True)
+            
+            excel_bytes = generate_formal_excel(final_items, meta)
+            st.download_button(
+                label=f"📥 Download Delivery Advice for Order {order_no} (.xlsx)",
+                data=excel_bytes,
+                file_name=f"Delivery_Advice_Order_{order_no}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"download_{order_no}"
+            )
+            st.markdown("---")
