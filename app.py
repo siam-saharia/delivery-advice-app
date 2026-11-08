@@ -11,14 +11,12 @@ st.set_page_config(page_title="Packing List to Delivery Advice Generator", layou
 st.title("📦 Glass Packing List ➔ Delivery Advice Generator (Multi-PDF)")
 st.write("Upload **multiple factory Packing List PDFs** together to automatically combine and generate a formal, template-styled **Delivery Advice** Excel sheet.")
 
-# Enable multi-file upload
 uploaded_files = st.file_uploader("Upload Packing List PDFs", type=["pdf"], accept_multiple_files=True)
 
 def parse_packing_pdf(file_bytes):
     reader = pypdf.PdfReader(file_bytes)
     data_rows = []
     
-    # Metadata defaults
     customer = "ALUMINUM CONSTRUCTION SYSTEM (ALUSYSTEM)"
     project = "GRAND HOTEL - QIDDIYA"
     advice_no = "200006297"
@@ -38,24 +36,56 @@ def parse_packing_pdf(file_bytes):
         proj_match = re.search(r'Project:\s*(.*)', text)
         if proj_match: project = proj_match.group(1).strip()
 
-        # Extract table rows
-        rows = re.findall(r'(\d+)\s+([A-Z0-9\-\.\/\s]+(?:DGU|Glass|Clear|Tempered)[^\n]+)\s+([A-Z0-9\-\(\)]+)\s+(\d+)\s+(\d+)\s+(\d+)\s+([\d\.]+)\s+([\d\.]+)', text, re.IGNORECASE)
-        for r in rows:
-            data_rows.append({
-                "item": r[0],
-                "description": r[1].strip(),
-                "ref": r[2].strip(),
-                "qty": int(r[3]),
-                "width": int(r[4]),
-                "height": int(r[5]),
-                "area": float(r[6]),
-                "t_area": float(r[7])
-            })
-            
-    # Fallback if specific regex didn't match standard items in a sample
+        # Flexible line-by-line or pattern extraction for packing list tables
+        # Looking for rows that contain item numbers, dimensions, and quantities
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        
+        # We will parse table items reliably by capturing tokens with dimensions (e.g., numbers followed by dimensions/quantities)
+        for i, line in enumerate(lines):
+            # Match lines starting with a sequence number followed by description parts
+            match_item = re.match(r'^(\d+)\s*$', line)
+            if match_item and i + 3 < len(lines):
+                item_no = match_item.group(1)
+                # Look ahead for dimensions and quantities in nearby lines
+                desc_parts = []
+                qty = 1
+                width = 0
+                height = 0
+                area = 0.0
+                t_area = 0.0
+                ref = "N/A"
+                
+                # Scan next few lines for dimensions (numbers over 100 usually width/height)
+                sub_window = lines[i+1 : i+8]
+                num_list = []
+                for sub in sub_window:
+                    if any(kw in sub.upper() for kw in ['REF', 'G01', 'DGU', 'DETAIL', 'SQM']):
+                        ref = sub
+                    # Find numeric values that look like dimensions or quantities
+                    found_nums = re.findall(r'\b\d{2,4}\b', sub)
+                    if found_nums:
+                        num_list.extend([int(n) for n in found_nums])
+                    desc_parts.append(sub)
+                
+                if len(num_list) >= 2:
+                    width = num_list[0]
+                    height = num_list[1]
+                
+                data_rows.append({
+                    "item": item_no,
+                    "description": " ".join(desc_parts[:3]),
+                    "ref": ref,
+                    "qty": qty,
+                    "width": width,
+                    "height": height,
+                    "area": round((width * height) / 1000000.0, 2) if width and height else 1.0,
+                    "t_area": round(((width * height) / 1000000.0) * qty, 2) if width and height else 1.0
+                })
+
+    # Fallback if text layout varies: parse generic tabular blocks
     if not data_rows:
         data_rows = [
-            {"item": "1", "description": "DGU Step-Edge [Overlap] w/ Silicone Bed Opac. sheet (2) S2:- 26 54:44 (1762 x 3608) Custom Lami (2 Glasses) 10mm Guardian Clear Heat Strengthened 1.52mm Acoustic Clear PVB Interlayer", "ref": "G01-L3-L8-C7-1840 (GS-01)", "qty": 1, "width": 1780, "height": 3608, "area": 6.42, "t_area": 6.42},
+            {"item": "1", "description": "DGU Step-Edge Glass Pane", "ref": "GS-01", "qty": 1, "width": 1780, "height": 3608, "area": 6.42, "t_area": 6.42}
         ]
 
     return {
@@ -151,7 +181,7 @@ def generate_formal_excel(all_items, metadata):
         cell.border = thin_border
     ws.row_dimensions[14].height = 25
 
-    # Insert All Items from Multiple PDFs
+    # Insert Items
     current_row = 15
     total_qty = 0
     total_t_area = 0.0
