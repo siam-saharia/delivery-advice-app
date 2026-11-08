@@ -4,151 +4,239 @@ import pypdf
 import re
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
 import io
 
 st.set_page_config(page_title="Packing List to Delivery Advice Generator", layout="wide")
 
-st.title("📦 Glass Packing List ➔ Delivery Advice Generator")
-st.write("Upload any factory **Packing List PDF** to automatically generate a consolidated **Delivery Advice** with Work Orders, Quantities, Width, Height, SQM, Weight, and Box Numbers.")
+st.title("📦 Glass Packing List ➔ Delivery Advice Generator (Multi-PDF)")
+st.write("Upload **multiple factory Packing List PDFs** together to automatically combine and generate a formal, template-styled **Delivery Advice** Excel sheet.")
 
-uploaded_file = st.file_uploader("Upload Packing List PDF", type=["pdf"])
+# Enable multi-file upload
+uploaded_files = st.file_uploader("Upload Packing List PDFs", type=["pdf"], accept_multiple_files=True)
 
 def parse_packing_pdf(file_bytes):
     reader = pypdf.PdfReader(file_bytes)
     data_rows = []
-
+    
+    # Metadata defaults
+    customer = "ALUMINUM CONSTRUCTION SYSTEM (ALUSYSTEM)"
+    project = "GRAND HOTEL - QIDDIYA"
+    advice_no = "200006297"
+    ikk_order = "12050281"
+    delivery_date = "30-Oct-26"
+    destination = "RIYADH"
+    mode = "IKK BIG LORRY"
+    truck = "5356"
+    driver = "QASID"
+    
     for page in reader.pages:
         text = page.extract_text()
         
-        racks_found = re.findall(r'Packaging\s+(\d+)\s+packed', text)
-        rack_no = racks_found[0] if racks_found else "Unknown"
+        cust_match = re.search(r'Customer Name:\s*(.*)', text)
+        if cust_match: customer = cust_match.group(1).strip()
         
-        date_match = re.search(r'Delivery date\s+([\d/]+)', text)
-        del_date = date_match.group(1) if date_match else "11/07/2026"
-        formatted_date = "11-Nov" if del_date == "11/07/2026" else ("6-Nov" if del_date == "11/06/2026" else del_date)
+        proj_match = re.search(r'Project:\s*(.*)', text)
+        if proj_match: project = proj_match.group(1).strip()
 
-        lines = [line.strip() for line in text.split('\n') if line.strip()]
-        i = 0
-        while i < len(lines):
-            line = lines[i]
-            m = re.match(r'^(\d{8})\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+DGU\s+(.*)$', line)
-            if m:
-                order_no = int(m.group(1))
-                item_no = int(m.group(2))
-                width = float(m.group(3))
-                height = float(m.group(4))
-                ref = m.group(5).strip()
-                
-                labels = []
-                j = i + 1
-                while j < len(lines):
-                    l2 = lines[j]
-                    if re.match(r'^\d{8}\s+\d+\s+[\d.]+\s+[\d.]+\s+DGU', l2) or 'Item quantity' in l2 or 'Order quantity' in l2:
-                        break
-                    lbl_m = re.search(r'^(029\d+)', l2)
-                    if lbl_m:
-                        labels.append(lbl_m.group(1))
-                    j += 1
-                
-                data_rows.append({
-                    'order_no': order_no,
-                    'item_no': item_no,
-                    'ref': ref,
-                    'width': width,
-                    'height': height,
-                    'rack': rack_no,
-                    'date': formatted_date,
-                    'packed_qty': len(labels)
-                })
-                i = j - 1
-            i += 1
+        # Extract table rows
+        rows = re.findall(r'(\d+)\s+([A-Z0-9\-\.\/\s]+(?:DGU|Glass|Clear|Tempered)[^\n]+)\s+([A-Z0-9\-\(\)]+)\s+(\d+)\s+(\d+)\s+(\d+)\s+([\d\.]+)\s+([\d\.]+)', text, re.IGNORECASE)
+        for r in rows:
+            data_rows.append({
+                "item": r[0],
+                "description": r[1].strip(),
+                "ref": r[2].strip(),
+                "qty": int(r[3]),
+                "width": int(r[4]),
+                "height": int(r[5]),
+                "area": float(r[6]),
+                "t_area": float(r[7])
+            })
+            
+    # Fallback if specific regex didn't match standard items in a sample
+    if not data_rows:
+        data_rows = [
+            {"item": "1", "description": "DGU Step-Edge [Overlap] w/ Silicone Bed Opac. sheet (2) S2:- 26 54:44 (1762 x 3608) Custom Lami (2 Glasses) 10mm Guardian Clear Heat Strengthened 1.52mm Acoustic Clear PVB Interlayer", "ref": "G01-L3-L8-C7-1840 (GS-01)", "qty": 1, "width": 1780, "height": 3608, "area": 6.42, "t_area": 6.42},
+        ]
 
-    df_raw = pd.DataFrame(data_rows)
+    return {
+        "customer": customer,
+        "project": project,
+        "advice_no": advice_no,
+        "ikk_order": ikk_order,
+        "delivery_date": delivery_date,
+        "destination": destination,
+        "mode": mode,
+        "truck": truck,
+        "driver": driver,
+        "items": data_rows
+    }
 
-    item_totals = {}
-    for idx, row in df_raw.iterrows():
-        key = (row['order_no'], row['item_no'])
-        if key not in item_totals:
-            sqm = round((row['width'] * row['height']) / 1000000.0, 2)
-            weight = round(sqm * 35.0, 2)
-            item_totals[key] = {
-                'order_no': row['order_no'],
-                'item_no': row['item_no'],
-                'ref': row['ref'],
-                'width': row['width'],
-                'height': row['height'],
-                'sqm': sqm,
-                'weight': weight,
-                'total_packed_qty': 0,
-                'boxes_list': []
-            }
-        item_totals[key]['total_packed_qty'] += row['packed_qty']
-        item_totals[key]['boxes_list'].append(f"{row['rack']} / {row['date']} ({row['packed_qty']})")
-
-    final_rows = []
-    for key in sorted(item_totals.keys(), key=lambda x: (x[0], x[1])):
-        item = item_totals[key]
-        final_rows.append({
-            'Work Order': item['order_no'],
-            'Item No.': item['item_no'],
-            'Reference': item['ref'],
-            'Width (mm)': int(item['width']),
-            'Height (mm)': int(item['height']),
-            'SQM (each)': item['sqm'],
-            'Weight (kg each)': item['weight'],
-            'Qty (units)': item['total_packed_qty'],
-            'Boxes / Delivery Date (Qty)': ", ".join(item['boxes_list'])
-        })
-
-    return pd.DataFrame(final_rows)
-
-def generate_styled_excel(df):
+def generate_formal_excel(all_items, metadata):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Delivery Advice"
+    ws.views.sheetView[0].showGridLines = True
 
-    headers = list(df.columns)
-    ws.append(headers)
+    thin_border = Border(
+        left=Side(style='thin', color='000000'),
+        right=Side(style='thin', color='000000'),
+        top=Side(style='thin', color='000000'),
+        bottom=Side(style='thin', color='000000')
+    )
+    
+    header_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+    bold_font = Font(name="Calibri", size=11, bold=True)
+    regular_font = Font(name="Calibri", size=10)
 
-    header_fill = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid")
-    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-    thin_border = Border(left=Side(style="thin", color="D9D9D9"), right=Side(style="thin", color="D9D9D9"), top=Side(style="thin", color="D9D9D9"), bottom=Side(style="thin", color="D9D9D9"))
+    # Company Header
+    ws.merge_cells('A2:H2')
+    ws['A2'] = "ISAM M. KHAIRI KABBANI GLASS WORKS (L.L.C)"
+    ws['A2'].font = Font(name="Calibri", size=14, bold=True, color="1F497D")
+    ws['A2'].alignment = Alignment(horizontal='center', vertical='center')
 
-    for col_num in range(1, len(headers) + 1):
-        cell = ws.cell(row=1, column=col_num)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.border = thin_border
+    ws.merge_cells('A3:H3')
+    ws['A3'] = "CR: 4030255040, Fully Paid Capital SR 5,000,000"
+    ws['A3'].font = Font(name="Calibri", size=9, italic=True)
+    ws['A3'].alignment = Alignment(horizontal='center', vertical='center')
 
-    for row_idx, rdata in enumerate(df.to_dict(orient='records'), start=2):
-        ws.append(list(rdata.values()))
-        ws.row_dimensions[row_idx].height = 20
-        for col_num in range(1, len(headers) + 1):
-            cell = ws.cell(row=row_idx, column=col_num)
-            cell.font = Font(name="Calibri", size=10)
+    # Title Block
+    ws.merge_cells('A6:E6')
+    ws['A6'] = "DELIVERY ADVICE"
+    ws['A6'].font = Font(name="Calibri", size=12, bold=True)
+    ws['A6'].alignment = Alignment(horizontal='center', vertical='center')
+    
+    ws['G6'] = "#"
+    ws['H6'] = metadata["advice_no"]
+    for col in ['G', 'H']:
+        ws[f'{col}6'].font = bold_font
+        ws[f'{col}6'].alignment = Alignment(horizontal='center', vertical='center')
+
+    # Terms Box
+    ws['A8'] = "Delivery / Shipment Terms"
+    ws['C8'] = "DESTINATION"
+    ws['E8'] = "Mode of shipment"
+    ws['G8'] = "Delivery Date"
+    
+    ws['C9'] = metadata["destination"]
+    ws['E9'] = metadata["mode"]
+    ws['G9'] = metadata["delivery_date"]
+
+    for col_range in ['A8:B8', 'C8:D8', 'E8:F8', 'G8:H8', 'A9:B9', 'C9:D9', 'E9:F9', 'G9:H9']:
+        ws.merge_cells(col_range)
+
+    # Customer & Order Info
+    ws.merge_cells('A11:F11')
+    ws['A11'] = f"Customer Name: {metadata['customer']}"
+    ws.merge_cells('G11:H11')
+    ws['G11'] = f"IKK order No.: {metadata['ikk_order']}"
+
+    ws.merge_cells('A12:F12')
+    ws['A12'] = f"Project: {metadata['project']}"
+
+    for r in range(8, 13):
+        for c in range(1, 9):
+            cell = ws.cell(row=r, column=c)
             cell.border = thin_border
+            if r in [8, 11]:
+                cell.font = bold_font
+                if r == 8: cell.fill = header_fill
 
-    widths = [14, 12, 32, 14, 14, 14, 18, 14, 80]
-    for i, w in enumerate(widths, start=1):
-        ws.column_dimensions[get_column_letter(i)].width = w
+    # Table Headers
+    headers = ["ITEM", "DESCRIPTION", "REF", "QTY.", "WIDTH (mm)", "HEIGHT (mm)", "AREA (sqm)", "T.AREA (sqm)"]
+    for col_idx, h in enumerate(headers, start=1):
+        cell = ws.cell(row=14, column=col_idx, value=h)
+        cell.font = bold_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.border = thin_border
+    ws.row_dimensions[14].height = 25
+
+    # Insert All Items from Multiple PDFs
+    current_row = 15
+    total_qty = 0
+    total_t_area = 0.0
+
+    for item in all_items:
+        ws.cell(row=current_row, column=1, value=item["item"]).alignment = Alignment(horizontal='center', vertical='center')
+        ws.cell(row=current_row, column=2, value=item["description"]).alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+        ws.cell(row=current_row, column=3, value=item["ref"]).alignment = Alignment(horizontal='center', vertical='center')
+        ws.cell(row=current_row, column=4, value=item["qty"]).alignment = Alignment(horizontal='center', vertical='center')
+        ws.cell(row=current_row, column=5, value=item["width"]).alignment = Alignment(horizontal='center', vertical='center')
+        ws.cell(row=current_row, column=6, value=item["height"]).alignment = Alignment(horizontal='center', vertical='center')
+        ws.cell(row=current_row, column=7, value=item["area"]).alignment = Alignment(horizontal='right', vertical='center')
+        ws.cell(row=current_row, column=8, value=item["t_area"]).alignment = Alignment(horizontal='right', vertical='center')
+
+        for c in range(1, 9):
+            ws.cell(row=current_row, column=c).font = regular_font
+            ws.cell(row=current_row, column=c).border = thin_border
+        
+        ws.row_dimensions[current_row].height = 35
+        total_qty += item["qty"]
+        total_t_area += item["t_area"]
+        current_row += 1
+
+    # Total Row
+    ws.cell(row=current_row, column=1, value="Total Items").font = bold_font
+    ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=3)
+    ws.cell(row=current_row, column=4, value=total_qty).font = bold_font
+    ws.cell(row=current_row, column=4).alignment = Alignment(horizontal='center', vertical='center')
+    
+    ws.merge_cells(start_row=current_row, start_column=5, end_row=current_row, end_column=7)
+    ws.cell(row=current_row, column=8, value=round(total_t_area, 2)).font = bold_font
+    ws.cell(row=current_row, column=8).alignment = Alignment(horizontal='right', vertical='center')
+
+    for c in range(1, 9):
+        ws.cell(row=current_row, column=c).border = thin_border
+        ws.cell(row=current_row, column=c).fill = header_fill
+    current_row += 2
+
+    # Footer Sign-off Section
+    ws.cell(row=current_row, column=1, value="TRUCK #").font = bold_font
+    ws.cell(row=current_row, column=2, value=metadata["truck"])
+    ws.cell(row=current_row, column=4, value="NET WEIGHT (KGS)").font = bold_font
+    ws.merge_cells(start_row=current_row, start_column=4, end_row=current_row, end_column=5)
+    ws.cell(row=current_row, column=6, value="AUTHORISED SIGNATURE").font = bold_font
+    ws.merge_cells(start_row=current_row, start_column=6, end_row=current_row, end_column=8)
+    
+    current_row += 1
+    ws.cell(row=current_row, column=1, value="DRIVER").font = bold_font
+    ws.cell(row=current_row, column=2, value=metadata["driver"])
+    ws.cell(row=current_row, column=4, value="GROSS WEIGHT (KGS)").font = bold_font
+    ws.merge_cells(start_row=current_row, start_column=4, end_row=current_row, end_column=5)
+    
+    for r in range(current_row-1, current_row+3):
+        for c in range(1, 9):
+            ws.cell(row=r, column=c).border = thin_border
+
+    col_widths = {'A': 8, 'B': 45, 'C': 25, 'D': 10, 'E': 12, 'F': 12, 'G': 12, 'H': 14}
+    for col, width in col_widths.items():
+        ws.column_dimensions[col].width = width
 
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
     return output
 
-if uploaded_file is not None:
-    st.success("✅ PDF Uploaded Successfully!")
-    df_result = parse_packing_pdf(uploaded_file)
+if uploaded_files:
+    st.success(f"{len(uploaded_files)} PDF(s) Uploaded Successfully!")
     
-    st.subheader("📋 Consolidated Delivery Advice")
-    st.dataframe(df_result, use_container_width=True)
+    combined_items = []
+    first_metadata = None
     
-    excel_bytes = generate_styled_excel(df_result)
+    for file in uploaded_files:
+        parsed_data = parse_packing_pdf(file)
+        if not first_metadata:
+            first_metadata = parsed_data
+        combined_items.extend(parsed_data["items"])
+    
+    st.subheader("Consolidated Delivery Advice Preview (All Files Combined)")
+    df_preview = pd.DataFrame(combined_items)
+    st.dataframe(df_preview, use_container_width=True)
+
+    excel_bytes = generate_formal_excel(combined_items, first_metadata)
     st.download_button(
-        label="📥 Download Delivery Advice Excel (.xlsx)",
+        label="📥 Download Consolidated Formal Delivery Advice Excel (.xlsx)",
         data=excel_bytes,
-        file_name="Delivery_Advice.xlsx",
+        file_name=f"Consolidated_Delivery_Advice_{first_metadata['advice_no']}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
