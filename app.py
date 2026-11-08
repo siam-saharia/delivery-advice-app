@@ -65,30 +65,21 @@ def parse_packing_pdf(file_bytes):
                 if "DETAIL" in sub.upper() or "REF" in sub.upper() or "G0" in sub.upper() or "SG0" in sub.upper():
                     ref_str = sub
                 else:
-                    # Check if token is purely numeric or dimension/qty
                     if re.match(r'^\d+(?:\.\d+)?$', sub):
                         numeric_tokens.append(float(sub) if '.' in sub else int(sub))
                     else:
                         desc_lines.append(sub)
                 j += 1
             
-            # Filter out box/rack numbers (typically large IDs > 5000 or specific counts) and map correctly:
-            # Expected sequence after description/ref: [Qty, Width, Height, Area, T.Area]
-            valid_nums = [n for n in numeric_tokens if n < 10000]
+            # SMART RANGE FILTERING:
+            # - Quantities are typically small integers (1 to 200)
+            # - Width & Height dimensions are larger integers (200 to 5000)
+            dimensions = [n for n in numeric_tokens if isinstance(n, int) and 200 <= n <= 5000]
+            quantities = [n for n in numeric_tokens if isinstance(n, int) and 1 <= n < 200]
             
-            qty = 1
-            width = 1090
-            height = 2370
-            
-            if len(valid_nums) >= 3:
-                # Last 3 or 4 numbers usually represent Qty, Width, Height
-                qty = int(valid_nums[-3])
-                width = int(valid_nums[-2])
-                height = int(valid_nums[-1])
-            elif len(valid_nums) == 2:
-                qty = 1
-                width = int(valid_nums[0])
-                height = int(valid_nums[1])
+            qty = quantities[0] if quantities else 1
+            width = dimensions[0] if len(dimensions) > 0 else 1090
+            height = dimensions[1] if len(dimensions) > 1 else 2370
             
             area = round((width * height) / 1000000.0, 2)
             t_area = round(area * qty, 2)
@@ -278,7 +269,6 @@ if uploaded_files:
     orders_dict = {}
     metadata_dict = {}
     
-    # Group PDFs by their unique IKK Order Number
     for file in uploaded_files:
         parsed_data = parse_packing_pdf(file)
         order_no = parsed_data["ikk_order"]
@@ -292,11 +282,10 @@ if uploaded_files:
     st.markdown("---")
     st.subheader(f"Found {len(orders_dict)} Distinct Work Order(s)")
 
-    # Render separate preview and download button for each unique order
     for order_no, raw_items in orders_dict.items():
         meta = metadata_dict[order_no]
         
-        # Strict consolidation per order (Group by Item Number, Width, Height)
+        # Strict consolidation per order
         consolidated_dict = {}
         for item in raw_items:
             key = (str(item['item']).strip(), item['width'], item['height'])
