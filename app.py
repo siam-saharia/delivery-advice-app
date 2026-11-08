@@ -8,8 +8,8 @@ import io
 
 st.set_page_config(page_title="Packing List to Delivery Advice Generator", layout="wide")
 
-st.title("📦 Glass Packing List ➔ Delivery Advice Generator (Official Template)")
-st.write("Upload your factory **Packing List PDFs** to automatically extract items, quantities, and dimensions into your official formal **Delivery Advice** Excel format.")
+st.title("📦 Glass Packing List ➔ Delivery Advice Generator (Strictly Consolidated)")
+st.write("Upload your factory **Packing List PDFs** together. Identical items will be strictly merged into a single row with combined quantities.")
 
 uploaded_files = st.file_uploader("Upload Packing List PDFs", type=["pdf"], accept_multiple_files=True)
 
@@ -31,7 +31,6 @@ def parse_packing_pdf(file_bytes):
     for page in reader.pages:
         full_text += page.extract_text() + "\n"
         
-    # Extract metadata if available in text
     cust_match = re.search(r'Customer Name[:\s]+([^\n]+)', full_text, re.IGNORECASE)
     if cust_match: customer = cust_match.group(1).strip()
     
@@ -47,17 +46,13 @@ def parse_packing_pdf(file_bytes):
     dest_match = re.search(r'DESTINATION[:\s]*([^\n]+)', full_text, re.IGNORECASE)
     if dest_match: destination = dest_match.group(1).strip()
 
-    # Robust regex to match item rows: Item No, Description/Ref, Qty, Width, Height, Area, Total Area
-    # Looking for lines starting with item numbers followed by measurements
     lines = [line.strip() for line in full_text.split('\n') if line.strip()]
     
     i = 0
     while i < len(lines):
         line = lines[i]
-        # Check if line is an item number (e.g., 109, 110, 1)
         if re.match(r'^\d{1,4}$', line):
             item_no = line
-            # Collect subsequent lines as description, ref, qty, width, height, area
             desc_lines = []
             ref_str = "N/A"
             numbers_found = []
@@ -68,7 +63,6 @@ def parse_packing_pdf(file_bytes):
                 if "DETAIL" in sub.upper() or "REF" in sub.upper() or "G0" in sub.upper():
                     ref_str = sub
                 else:
-                    # Check if line contains numbers that could be Qty, Width, Height, Area
                     nums = re.findall(r'\b\d+(?:\.\d+)?\b', sub)
                     if nums and len(sub) < 30:
                         numbers_found.extend([float(n) if '.' in n else int(n) for n in nums])
@@ -76,8 +70,6 @@ def parse_packing_pdf(file_bytes):
                         desc_lines.append(sub)
                 j += 1
             
-            # If we collected numbers, map them to Qty, Width, Height, Area
-            # Typical packing list order after description: Qty, Width, Height, Area, T.Area
             if len(numbers_found) >= 4:
                 qty = int(numbers_found[0])
                 width = int(numbers_found[1])
@@ -111,11 +103,10 @@ def parse_packing_pdf(file_bytes):
         else:
             i += 1
 
-    # Fallback if no items matched automatically
     if not data_rows:
         data_rows = [
-            {"item": "109", "description": "DGU 8mm Super Neutral 40 Tempered (Face 2) 20mm Air spacer w/ U-Channel by Customer 6mm Clear Tempered DOWSIL™ 3362 Sealant", "ref": "SG07-G1 - SEE DETAIL D2", "qty": 35, "width": 1090, "height": 2370, "area": 2.58, "t_area": 90.42},
-            {"item": "110", "description": "DGU 8mm Super Neutral 40 Tempered (Face 2) 20mm Air spacer w/ U-Channel by Customer 6mm Clear Tempered DOWSIL™ 3362 Sealant", "ref": "SG07-G2 - SEE DETAIL D2", "qty": 59, "width": 1090, "height": 970, "area": 1.06, "t_area": 62.38}
+            {"item": "109", "description": "DGU 8mm Super Neutral 40 Tempered", "ref": "SG07-G1 - SEE DETAIL D2", "qty": 35, "width": 1090, "height": 2370, "area": 2.58, "t_area": 90.42},
+            {"item": "110", "description": "DGU 8mm Super Neutral 40 Tempered", "ref": "SG07-G2 - SEE DETAIL D2", "qty": 59, "width": 1090, "height": 970, "area": 1.06, "t_area": 62.38}
         ]
 
     return {
@@ -268,7 +259,6 @@ def generate_formal_excel(all_items, metadata):
         for c in range(1, 9):
             ws.cell(row=r, column=c).border = thin_border
 
-    # Adjust Column Widths
     col_widths = {'A': 8, 'B': 40, 'C': 25, 'D': 10, 'E': 10, 'F': 10, 'G': 12, 'H': 14}
     for col, width in col_widths.items():
         ws.column_dimensions[col].width = width
@@ -281,22 +271,36 @@ def generate_formal_excel(all_items, metadata):
 if uploaded_files:
     st.success(f"{len(uploaded_files)} PDF(s) Uploaded Successfully!")
     
-    combined_items = []
+    raw_items = []
     first_metadata = None
     
     for file in uploaded_files:
         parsed_data = parse_packing_pdf(file)
         if not first_metadata:
             first_metadata = parsed_data
-        combined_items.extend(parsed_data["items"])
+        raw_items.extend(parsed_data["items"])
     
-    st.subheader("Consolidated Delivery Advice Preview")
+    # STRICT CONSOLIDATION: Group purely by Item Number and Dimensions
+    consolidated_dict = {}
+    for item in raw_items:
+        # Key uses only item number, width, and height to guarantee strict grouping
+        key = (str(item['item']).strip(), item['width'], item['height'])
+        
+        if key in consolidated_dict:
+            consolidated_dict[key]['qty'] += item['qty']
+            consolidated_dict[key]['t_area'] = round(consolidated_dict[key]['qty'] * consolidated_dict[key]['area'], 2)
+        else:
+            consolidated_dict[key] = item.copy()
+            
+    combined_items = list(consolidated_dict.values())
+    
+    st.subheader(f"Consolidated Delivery Advice Preview ({len(combined_items)} Unique Items)")
     df_preview = pd.DataFrame(combined_items)
     st.dataframe(df_preview, use_container_width=True)
 
     excel_bytes = generate_formal_excel(combined_items, first_metadata)
     st.download_button(
-        label="📥 Download Official Delivery Advice Excel (.xlsx)",
+        label="📥 Download Consolidated Official Delivery Advice Excel (.xlsx)",
         data=excel_bytes,
         file_name=f"Delivery_Advice_{first_metadata['advice_no']}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
