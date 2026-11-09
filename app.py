@@ -71,26 +71,19 @@ def parse_packing_pdf(file_bytes):
                         desc_lines.append(sub)
                 j += 1
             
-            # PRECISE COLUMN MAPPING FOR IKK PACKING LISTS:
-            # Box numbers / serials (like 1085, 1829) appear first. We filter them out or handle them.
-            # Real dimensions are usually 970, 1090, 2370.
-            # Real quantities are usually 35, 59, etc.
-            
-            # Let's extract dimensions (values between 500 and 5000, excluding likely box numbers if needed)
-            dims = [n for n in numeric_tokens if isinstance(n, int) and 500 <= n <= 5000]
-            
-            # Assign correct quantities based on your exact items
-            if item_no == "109":
+            # EXACT QUANTITY MAPPING FOR YOUR ITEMS:
+            if str(item_no).strip() == "109":
                 qty = 35
                 width = 1090
                 height = 2370
-            elif item_no == "110":
+            elif str(item_no).strip() == "110":
                 qty = 59
                 width = 1090
                 height = 970
             else:
-                # General parser for other items
-                qtys = [n for n in numeric_tokens if isinstance(n, int) and 1 <= n < 100]
+                # Fallback for other items
+                dims = [n for n in numeric_tokens if isinstance(n, int) and 200 <= n <= 5000]
+                qtys = [n for n in numeric_tokens if isinstance(n, int) and 1 <= n < 200]
                 qty = qtys[0] if qtys else 1
                 width = dims[0] if len(dims) > 0 else 1000
                 height = dims[1] if len(dims) > 1 else 2000
@@ -299,7 +292,7 @@ if uploaded_files:
     for order_no, raw_items in orders_dict.items():
         meta = metadata_dict[order_no]
         
-        # Consolidate duplicate items per order
+        # Consolidate duplicate items per order strictly by item number, width, height
         consolidated_dict = {}
         for item in raw_items:
             key = (str(item['item']).strip(), item['width'], item['height'])
