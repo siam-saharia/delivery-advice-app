@@ -7,9 +7,9 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 import io
 
-st.set_page_config(page_title="Packing List to Delivery Advice Generator", layout="wide")
+st.set_page_config(page_title="Packing List to Order QTY list's", layout="wide")
 
-st.title("📦 Glass Packing List ➔ Delivery Advice Generator")
+st.title("📦 Glass Packing List ➔ Order QTY list'")
 st.write("Upload factory **Packing List PDFs** (single or multiple) to automatically generate a consolidated **Delivery Advice** with Work Orders, Quantities, Width, Height, SQM, Weight, and Box Numbers.")
 
 # Enabled multi-file upload
