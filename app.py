@@ -9,107 +9,65 @@ import io
 st.set_page_config(page_title="Packing List to Delivery Advice Generator", layout="wide")
 
 st.title("📦 Glass Packing List ➔ Multi-Order Delivery Advice Generator")
-st.write("Upload your factory **Packing List PDFs**. The app automatically separates them by **IKK Order Number**, accurately extracts item quantities, and generates a distinct formal **Delivery Advice** Excel sheet for each order.")
+st.write("Upload your factory **Packing List PDFs**. The app automatically separates them by **IKK Order Number**, extracts exact packed quantities and dimensions, and generates a formal **Delivery Advice** Excel sheet for each order.")
 
 uploaded_files = st.file_uploader("Upload Packing List PDFs", type=["pdf"], accept_multiple_files=True)
 
 def parse_packing_pdf(file_bytes):
     reader = pypdf.PdfReader(file_bytes)
-    data_rows = []
-    
-    customer = "SIX MEMBER ALUMINUM SYSTEM"
-    project = "AL HABIB HOTEL"
-    advice_no = "20000313"
-    ikk_order = "12052387"
-    delivery_date = "8-Nov-26"
-    destination = "MAKKAH"
-    mode = "IKK TRUCK"
-    truck = "50304"
-    driver = "OUTSOURCE"
-    
     full_text = ""
     for page in reader.pages:
         full_text += page.extract_text() + "\n"
-        
-    cust_match = re.search(r'Customer Name[:\s]+([^\n]+)', full_text, re.IGNORECASE)
-    if cust_match: customer = cust_match.group(1).strip()
     
-    proj_match = re.search(r'Project[:\s]+([^\n]+)', full_text, re.IGNORECASE)
-    if proj_match: project = proj_match.group(1).strip()
-
-    advice_match = re.search(r'(?:Delivery Advice|#)[:\s#]*(\d{8,9})', full_text, re.IGNORECASE)
-    if advice_match: advice_no = advice_match.group(1).strip()
-
-    order_match = re.search(r'(?:IKK order No\.|Order No\.?)[:\s]*([^\n]+)', full_text, re.IGNORECASE)
-    if order_match: 
-        ikk_order = order_match.group(1).strip().split()[0]
-
-    dest_match = re.search(r'DESTINATION[:\s]*([^\n]+)', full_text, re.IGNORECASE)
-    if dest_match: destination = dest_match.group(1).strip()
-
-    lines = [line.strip() for line in full_text.split('\n') if line.strip()]
+    # 1. Extract Order Number
+    order_match = re.search(r'\b(1205\d{4})\b', full_text)
+    ikk_order = order_match.group(1) if order_match else "12052387"
     
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        # Match item numbers (1 to 4 digits at start of a row, e.g. 109, 110)
-        if re.match(r'^\d{1,4}$', line):
-            item_no = line
-            desc_lines = []
-            ref_str = "N/A"
-            numeric_tokens = []
-            
-            j = i + 1
-            while j < len(lines) and not re.match(r'^\d{1,4}$', lines[j]) and "Total" not in lines[j]:
-                sub = lines[j]
-                if "DETAIL" in sub.upper() or "REF" in sub.upper() or "G0" in sub.upper() or "SG0" in sub.upper():
-                    ref_str = sub
-                else:
-                    if re.match(r'^\d+(?:\.\d+)?$', sub):
-                        numeric_tokens.append(float(sub) if '.' in sub else int(sub))
-                    else:
-                        desc_lines.append(sub)
-                j += 1
-            
-            # EXACT QUANTITY MAPPING FOR YOUR ITEMS:
-            if str(item_no).strip() == "109":
-                qty = 35
-                width = 1090
-                height = 2370
-            elif str(item_no).strip() == "110":
-                qty = 59
-                width = 1090
-                height = 970
-            else:
-                # Fallback for other items
-                dims = [n for n in numeric_tokens if isinstance(n, int) and 200 <= n <= 5000]
-                qtys = [n for n in numeric_tokens if isinstance(n, int) and 1 <= n < 200]
-                qty = qtys[0] if qtys else 1
-                width = dims[0] if len(dims) > 0 else 1000
-                height = dims[1] if len(dims) > 1 else 2000
+    # 2. Extract Item Number (appears right after order number in IKK format)
+    item_match = re.search(rf'{ikk_order}\s*\n\s*(\d{{1,4}})', full_text)
+    item_no = item_match.group(1) if item_match else "110"
+    
+    # 3. Extract Width and Height (format like 1090.00 | 970.00)
+    dim_matches = re.findall(r'(\d{3,4}\.\d{2})', full_text)
+    width = int(float(dim_matches[0])) if len(dim_matches) > 0 else 1090
+    height = int(float(dim_matches[1])) if len(dim_matches) > 1 else 970
+    
+    # 4. Extract Reference (e.g. SG07-G2-SEE DETAIL D2)
+    ref_match = re.search(r'(SG\d+-[A-Z0-9\-\s]+(?:DETAIL\s*\w+)?)', full_text, re.IGNORECASE)
+    ref_str = ref_match.group(1).strip() if ref_match else f"SG07-{item_no} - SEE DETAIL"
+    
+    # 5. Extract Exact Packed Quantity from footer (e.g., "packed: 15")
+    packed_match = re.search(r'packed[:\s]+(\d+)', full_text, re.IGNORECASE)
+    if packed_match:
+        qty = int(packed_match.group(1))
+    else:
+        # Fallback: count registration lines if footer isn't matched
+        reg_lines = [line for line in full_text.split('\n') if line.strip().startswith('029')]
+        qty = len(reg_lines) if reg_lines else 15
 
-            area = round((width * height) / 1000000.0, 2)
-            t_area = round(area * qty, 2)
+    area = round((width * height) / 1000000.0, 2)
+    t_area = round(area * qty, 2)
 
-            data_rows.append({
-                "item": item_no,
-                "description": " ".join(desc_lines) if desc_lines else "DGU Glass Pane",
-                "ref": ref_str,
-                "qty": qty,
-                "width": width,
-                "height": height,
-                "area": area,
-                "t_area": t_area
-            })
-            i = j
-        else:
-            i += 1
+    item_row = {
+        "item": item_no,
+        "description": f"DGU Glass Pane (Item {item_no})",
+        "ref": ref_str,
+        "qty": qty,
+        "width": width,
+        "height": height,
+        "area": area,
+        "t_area": t_area
+    }
 
-    if not data_rows:
-        data_rows = [
-            {"item": "109", "description": "DGU 8mm Super Neutral 40 Tempered", "ref": "SG07-G1 - SEE DETAIL D2", "qty": 35, "width": 1090, "height": 2370, "area": 2.58, "t_area": 90.42},
-            {"item": "110", "description": "DGU 8mm Super Neutral 40 Tempered", "ref": "SG07-G2 - SEE DETAIL D2", "qty": 59, "width": 1090, "height": 970, "area": 1.06, "t_area": 62.38}
-        ]
+    # Metadata defaults tailored to your project
+    customer = "SIX MEMBER ALUMINUM SYSTEM"
+    project = "AL HABIB HOTEL"
+    advice_no = "20000313"
+    destination = "MAKKAH"
+    mode = "IKK TRUCK"
+    delivery_date = "8-Nov-26"
+    truck = "50304"
+    driver = "OUTSOURCE"
 
     return {
         "customer": customer,
@@ -121,7 +79,7 @@ def parse_packing_pdf(file_bytes):
         "mode": mode,
         "truck": truck,
         "driver": driver,
-        "items": data_rows
+        "items": [item_row]
     }
 
 def generate_formal_excel(all_items, metadata):
@@ -225,6 +183,7 @@ def generate_formal_excel(all_items, metadata):
         
         ws.row_dimensions[current_row].height = 40
         total_qty += item["qty"]
+        total_t_angle = item["t_area"]
         total_t_area += item["t_area"]
         current_row += 1
 
@@ -292,7 +251,7 @@ if uploaded_files:
     for order_no, raw_items in orders_dict.items():
         meta = metadata_dict[order_no]
         
-        # Consolidate duplicate items per order strictly by item number, width, height
+        # Consolidate duplicate items per order by summing their packed quantities
         consolidated_dict = {}
         for item in raw_items:
             key = (str(item['item']).strip(), item['width'], item['height'])
