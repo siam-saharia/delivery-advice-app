@@ -9,7 +9,7 @@ import io
 st.set_page_config(page_title="Packing List to Delivery Advice Generator", layout="wide")
 
 st.title("📦 Glass Packing List ➔ Multi-Order Delivery Advice Generator")
-st.write("Upload your factory **Packing List PDFs**. The app automatically extracts exact item numbers, dimensions, references, and packed quantities per work order.")
+st.write("Upload your factory **Packing List PDFs**. The app automatically separates them by **IKK Order Number**, extracts exact item quantities without duplicating, and generates a formal **Delivery Advice** Excel sheet for each order.")
 
 uploaded_files = st.file_uploader("Upload Packing List PDFs", type=["pdf"], accept_multiple_files=True)
 
@@ -253,7 +253,7 @@ def generate_formal_excel(all_items, metadata):
     ws.cell(row=current_row, column=4, value="NET WEIGHT (KGS)").font = bold_font
     ws.merge_cells(start_row=current_row, start_column=4, end_row=current_row, end_column=5)
     ws.cell(row=current_row, column=6, value="AUTHORISED SIGNATURE").font = bold_font
-    ws.merge_cells(start_row=current_row, start_column=6, end_row=current_row, end_column=8)
+    ws.merge_cells(start_row=current_row, start_column=6, end_row=current_row, end_row=8)
     
     current_row += 1
     ws.cell(row=current_row, column=1, value="DRIVER").font = bold_font
@@ -298,12 +298,13 @@ if uploaded_files:
         meta = base_meta.copy()
         meta["ikk_order"] = order_no
         
-        # Consolidate identical items by summing their quantities and areas
+        # UNIQUE MERGING: Prevent duplicate summation by keeping unique items by item number, width, height, ref
         consolidated_dict = {}
         for item in raw_items:
             key = (str(item['item']).strip(), item['width'], item['height'], item['ref'])
             if key in consolidated_dict:
-                consolidated_dict[key]['qty'] += item['qty']
+                # Keep the exact correct quantity (take max instead of adding up across multiple files)
+                consolidated_dict[key]['qty'] = max(consolidated_dict[key]['qty'], item['qty'])
                 consolidated_dict[key]['t_area'] = round(consolidated_dict[key]['qty'] * consolidated_dict[key]['area'], 2)
             else:
                 consolidated_dict[key] = item.copy()
